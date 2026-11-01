@@ -44,11 +44,13 @@ def call() {
                     sh 'sleep 10'
                     sh 'docker ps | grep zap-test-app'
 
-                                        echo "Running OWASP ZAP Attack..."
+                                                            echo "Running OWASP ZAP Attack..."
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        // Use relative path 'zap-report.html' instead of absolute
+                        // -w sets the working directory to the mounted volume
+                        // -r writes the report there
                         sh '''
                         docker run --rm --user root --network zap-net \
+                        -w /zap/wrk \
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
