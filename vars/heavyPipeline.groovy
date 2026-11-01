@@ -52,7 +52,7 @@ def call() {
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
-                        -r zap-report.html
+                        -r /zap/wrk/zap-report.html
                         '''
                     }
 
