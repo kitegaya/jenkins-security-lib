@@ -35,12 +35,15 @@ def call() {
         echo "Building App Container..."
         sh 'docker build -t test-app:latest .'
 
-        echo "Creating Sealed Docker Network..."
+        echo "Creating Docker Network..."
         sh 'docker network create zap-net || true'
 
         echo "Starting App Container..."
         sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
-        sh 'sleep 5' // Wait for the app to boot
+        sh 'sleep 10'
+
+        echo "Verifying App is Running..."
+        sh 'docker ps | grep zap-test-app'
 
         echo "Running OWASP ZAP Attack..."
         sh '''
