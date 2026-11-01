@@ -47,7 +47,7 @@ def call() {
                         sh '''
                         docker run --rm --network zap-sealed-net \
                         -v $(pwd):/zap/wrk/:rw \
-                        ghcr.io/zaproxy/zap-stable zap-baseline.py \
+                        zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
                         -r zap-report.html || true
                         '''
