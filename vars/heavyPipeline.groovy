@@ -41,24 +41,36 @@ def call() {
                     echo "Starting App Container..."
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
                     sh 'sleep 10'
-                    sh 'docker ps | grep zap-test-app'
 
                     echo "Running OWASP ZAP Attack..."
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        // Absolute path to mounted volume, no -w flag
+                        // Run ZAP without --rm so we can copy the file out
+                        // Use -r zap-report.html (relative path)
                         sh '''
-                        docker run --rm --user root --network zap-net \
+                        docker run --name zap-runner --user root --network zap-net \
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
-                        -r /zap/wrk/zap-report.html
+                        -r zap-report.html || true
                         '''
                     }
 
-                    echo "=== TRACING: Checking if ZAP report exists on host ==="
-                    sh 'ls -la zap-report.html || echo "ZAP REPORT NOT FOUND ON HOST"'
+                    echo "=== TRACING: Extracting ZAP Report ==="
+                    sh '''
+                    # List files inside the container to see where it went
+                    docker exec zap-runner ls -la /zap/wrk/ || echo "Cannot access /zap/wrk"
+                    docker exec zap-runner ls -la /zap/ || echo "Cannot access /zap"
+                    
+                    # Copy the report from the container
+                    docker cp zap-runner:/zap/wrk/zap-report.html ./zap-report.html 2>/dev/null || echo "Tried /zap/wrk, not found"
+                    docker cp zap-runner:/zap/zap-report.html ./zap-report.html 2>/dev/null || echo "Tried /zap, not found"
+                    
+                    # Remove the runner container
+                    docker rm -f zap-runner || true
+                    '''
+                    echo "======================================"
 
-                    echo "Cleaning up..."
+                    echo "Cleaning up app container and network..."
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker network rm zap-net || true'
                 }
