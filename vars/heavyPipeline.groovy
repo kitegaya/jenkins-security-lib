@@ -31,33 +31,31 @@ def call() {
             }
 
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
-                steps {
-                    echo "Building App Container..."
-                    sh 'docker build -t test-app:latest .'
+    steps {
+        echo "Building App Container..."
+        sh 'docker build -t test-app:latest .'
 
-                    echo "Creating Sealed Docker Network..."
-                    sh 'docker network create --internal zap-sealed-net || true'
+        echo "Creating Sealed Docker Network..."
+        sh 'docker network create zap-net || true'
 
-                    echo "Starting App Container..."
-                    sh 'docker run -d --name zap-test-app --network zap-sealed-net test-app:latest'
+        echo "Starting App Container..."
+        sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
+        sh 'sleep 5' // Wait for the app to boot
 
-                    echo "Running OWASP ZAP Attack..."
-                    // We use || true so the pipeline continues to the report stage even if ZAP finds issues
-                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        sh '''
-                        docker run --rm --network zap-sealed-net \
-                        -v $(pwd):/zap/wrk/:rw \
-                        zaproxy/zap-stable zap-baseline.py \
-                        -t http://zap-test-app:3000 \
-                        -r zap-report.html || true
-                        '''
-                    }
+        echo "Running OWASP ZAP Attack..."
+        sh '''
+        docker run --rm --user root --network zap-net \
+        -v $(pwd):/zap/wrk/:rw \
+        zaproxy/zap-stable zap-baseline.py \
+        -t http://zap-test-app:3000 \
+        -r zap-report.html || true
+        '''
 
-                    echo "Cleaning up Docker resources..."
-                    sh 'docker rm -f zap-test-app || true'
-                    sh 'docker network rm zap-sealed-net || true'
-                }
-            }
+        echo "Cleaning up..."
+        sh 'docker rm -f zap-test-app || true'
+        sh 'docker network rm zap-net || true'
+    }
+}
             
             stage('Final Report & Verdict') {
                 steps {
