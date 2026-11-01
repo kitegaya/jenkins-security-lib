@@ -29,6 +29,15 @@ def call() {
 
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
+                    // --- ADD THESE 3 LINES TO CLEAN UP ZOMBIE CONTAINERS ---
+                    sh 'docker rm -f zap-test-app || true'
+                    sh 'docker rm -f zap-runner || true'
+                    sh 'docker network rm zap-net || true'
+                    // -------------------------------------------------------
+
+                    echo "Building App Container..."
+                    sh 'docker build -t test-app:latest .'
+                    // ... rest of the stage
                     sh 'docker build -t test-app:latest .'
                     sh 'docker network create zap-net || true'
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
