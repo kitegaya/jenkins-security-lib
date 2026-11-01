@@ -29,6 +29,35 @@ def call() {
                     }
                 }
             }
+
+            stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
+                steps {
+                    echo "Building App Container..."
+                    sh 'docker build -t test-app:latest .'
+
+                    echo "Creating Sealed Docker Network..."
+                    sh 'docker network create --internal zap-sealed-net || true'
+
+                    echo "Starting App Container..."
+                    sh 'docker run -d --name zap-test-app --network zap-sealed-net test-app:latest'
+
+                    echo "Running OWASP ZAP Attack..."
+                    // We use || true so the pipeline continues to the report stage even if ZAP finds issues
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        sh '''
+                        docker run --rm --network zap-sealed-net \
+                        -v $(pwd):/zap/wrk/:rw \
+                        ghcr.io/zaproxy/zap-stable zap-baseline.py \
+                        -t http://zap-test-app:3000 \
+                        -r zap-report.html || true
+                        '''
+                    }
+
+                    echo "Cleaning up Docker resources..."
+                    sh 'docker rm -f zap-test-app || true'
+                    sh 'docker network rm zap-sealed-net || true'
+                }
+            }
             
             stage('Final Report & Verdict') {
                 steps {
@@ -47,10 +76,9 @@ def call() {
             }
             failure {
                 echo "🚨 HEAVY SCAN FAILED: One or more security issues found. Do NOT deploy."
-                echo "Review the failed stages above and fix all issues."
             }
             always {
-                archiveArtifacts artifacts: 'semgrep-report.json', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'semgrep-report.json, zap-report.html', allowEmptyArchive: true
             }
         }
     }
