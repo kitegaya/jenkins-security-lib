@@ -3,6 +3,10 @@ def call() {
     pipeline {
         agent any
         
+        environment {
+            APPROVED = 'false'
+        }
+        
         stages {
             stage('Fast: Secrets (Gitleaks)') {
                 steps {
@@ -58,13 +62,12 @@ def call() {
                     }
                     
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        // LET ZAP GENERATE DEFAULT FILES (report.html & report.json)
                         sh '''
                         docker run --name zap-runner --user root --network zap-net \
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
-                        -t http://zap-test-app:3000 \
-                        -r /zap/wrk/zap-report.html \
-                        -J /zap/wrk/zap-report.json
+                        -t http://zap-test-app:3000
                         '''
                     }
                     
@@ -72,8 +75,9 @@ def call() {
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
                     
-                    // Debug and Permissions
-                    sh 'ls -la'
+                    // RENAME ZAP DEFAULT FILES
+                    sh 'mv report.json zap-report.json || true'
+                    sh 'mv report.html zap-report.html || true'
                     sh 'chmod 644 zap-report.json zap-report.html || true'
                 }
             }
@@ -88,12 +92,13 @@ def call() {
 
             // --- THE HUMAN GATE ---
             stage('Manual Approval Gate') {
-                // Check native Jenkins failure status
                 when { expression { currentBuild.currentResult == 'FAILURE' } }
                 steps {
                     script {
                         try {
-                            telegramNotify("🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.", "security-report.pdf")
+                            // ADD CLICKABLE LINK TO TELEGRAM MESSAGE
+                            def msg = "🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.\n\n<a href='${env.BUILD_URL}'>👉 Click here to Approve or Abort in Jenkins</a>"
+                            telegramNotify(msg, "security-report.pdf")
                         } catch (e) {
                             echo "Telegram notification failed: ${e.message}"
                         }
@@ -102,7 +107,8 @@ def call() {
                             timeout(time: 1, unit: 'HOURS') {
                                 input message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
                             }
-                            // Override the FAILURE status since a human approved it
+                            // SET OUR CUSTOM FLAG
+                            env.APPROVED = 'true'
                             currentBuild.result = 'UNSTABLE' 
                         } catch (err) {
                             telegramNotify("❌ Deployment Aborted for ${env.JOB_NAME}.")
@@ -114,8 +120,8 @@ def call() {
             
             // --- DEPLOYMENT ---
             stage('Deploy to Production') {
-                // Only deploy if the build is UNSTABLE (human approved) or SUCCESS (passed all checks)
-                when { expression { currentBuild.result == 'UNSTABLE' || currentBuild.currentResult == 'SUCCESS' } }
+                // CHECK OUR CUSTOM FLAG
+                when { expression { env.APPROVED == 'true' || currentBuild.currentResult == 'SUCCESS' } }
                 steps {
                     echo "Deploying to Production..."
                     telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
