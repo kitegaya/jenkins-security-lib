@@ -3,19 +3,11 @@ def call() {
     pipeline {
         agent any
         
-        environment {
-            SCAN_FAILED = 'false'
-        }
-        
         stages {
             stage('Fast: Secrets (Gitleaks)') {
                 steps {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        script {
-                            env.SCAN_FAILED = 'true'
-                            sh 'gitleaks detect --source . --no-git --redact --exit-code 1'
-                            env.SCAN_FAILED = 'false'
-                        }
+                        sh 'gitleaks detect --source . --no-git --redact --exit-code 1'
                     }
                 }
             }
@@ -23,11 +15,7 @@ def call() {
             stage('Fast: Dependencies (NPM Audit)') {
                 steps {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        script {
-                            env.SCAN_FAILED = 'true'
-                            sh 'npm audit --audit-level=critical'
-                            env.SCAN_FAILED = 'false'
-                        }
+                        sh 'npm audit --audit-level=critical'
                     }
                 }
             }
@@ -35,32 +23,22 @@ def call() {
             stage('Heavy: Static Analysis (Semgrep)') {
                 steps {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        script {
-                            env.SCAN_FAILED = 'true'
-                            sh 'semgrep --config auto --error --json --output=semgrep-report.json .'
-                            env.SCAN_FAILED = 'false'
-                        }
+                        sh 'semgrep --config auto --error --json --output=semgrep-report.json .'
                     }
                 }
             }
 
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
-                    // Clean up zombies from previous failed runs
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
 
                     echo "Building App Container..."
                     sh 'docker build -t test-app:latest .'
-                    
-                    echo "Starting Isolated Network..."
                     sh 'docker network create --internal zap-net'
-                    
-                    echo "Starting App Container..."
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
                     
-                    // Robust wait: Use Node.js to check the app (since curl isn't in alpine)
                     script {
                         def bootStatus = sh(script: '''
                             for i in $(seq 1 30); do
@@ -75,29 +53,27 @@ def call() {
                         if (bootStatus != 0) {
                             echo "App failed to start. Logs:"
                             sh 'docker logs zap-test-app || true'
-                            env.SCAN_FAILED = 'true'
+                            error("App failed to boot!")
                         }
                     }
                     
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        script {
-                            env.SCAN_FAILED = 'true'
-                            sh '''
-                            docker run --name zap-runner --user root --network zap-net \
-                            -v $(pwd):/zap/wrk/:rw \
-                            zaproxy/zap-stable zap-baseline.py \
-                            -t http://zap-test-app:3000 \
-                            -r zap-report.html \
-                            -J zap-report.json
-                            '''
-                            env.SCAN_FAILED = 'false'
-                        }
+                        sh '''
+                        docker run --name zap-runner --user root --network zap-net \
+                        -v $(pwd):/zap/wrk/:rw \
+                        zaproxy/zap-stable zap-baseline.py \
+                        -t http://zap-test-app:3000 \
+                        -r /zap/wrk/zap-report.html \
+                        -J /zap/wrk/zap-report.json
+                        '''
                     }
                     
-                    // Teardown & Fix Permissions so Jenkins can read the reports
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
+                    
+                    // Debug and Permissions
+                    sh 'ls -la'
                     sh 'chmod 644 zap-report.json zap-report.html || true'
                 }
             }
@@ -112,13 +88,14 @@ def call() {
 
             // --- THE HUMAN GATE ---
             stage('Manual Approval Gate') {
-                when { expression { env.SCAN_FAILED == 'true' } }
+                // Check native Jenkins failure status
+                when { expression { currentBuild.currentResult == 'FAILURE' } }
                 steps {
                     script {
                         try {
                             telegramNotify("🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.", "security-report.pdf")
                         } catch (e) {
-                            echo "Telegram notification failed, but continuing to gate: ${e.message}"
+                            echo "Telegram notification failed: ${e.message}"
                         }
                         
                         try {
@@ -137,12 +114,10 @@ def call() {
             
             // --- DEPLOYMENT ---
             stage('Deploy to Production') {
-                // Prevent deployment if scans failed and no human clicked "Proceed"
-                when { expression { env.SCAN_FAILED == 'false' || currentBuild.result == 'UNSTABLE' } }
+                // Only deploy if the build is UNSTABLE (human approved) or SUCCESS (passed all checks)
+                when { expression { currentBuild.result == 'UNSTABLE' || currentBuild.currentResult == 'SUCCESS' } }
                 steps {
                     echo "Deploying to Production..."
-                    // Add your real deployment commands here (e.g., rsync, ssh pm2 restart)
-                    
                     telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
                 }
             }
