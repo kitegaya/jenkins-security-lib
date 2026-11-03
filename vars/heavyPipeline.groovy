@@ -62,12 +62,14 @@ def call() {
                     }
                     
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                        // LET ZAP GENERATE DEFAULT FILES (report.html & report.json)
+                        // THE FIX: Added -r report.html -J report.json
                         sh '''
                         docker run --name zap-runner --user root --network zap-net \
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
-                        -t http://zap-test-app:3000
+                        -t http://zap-test-app:3000 \
+                        -r report.html \
+                        -J report.json
                         '''
                     }
                     
@@ -75,7 +77,6 @@ def call() {
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
                     
-                    // RENAME ZAP DEFAULT FILES
                     sh 'mv report.json zap-report.json || true'
                     sh 'mv report.html zap-report.html || true'
                     sh 'chmod 644 zap-report.json zap-report.html || true'
@@ -95,19 +96,21 @@ def call() {
                 when { expression { currentBuild.currentResult == 'FAILURE' } }
                 steps {
                     script {
+                        // Create Telegram Buttons
+                        def buttons = '{"inline_keyboard":[[{"text":"✅ Proceed","callback_data":"proceed:' + env.BUILD_NUMBER + '"},{"text":"❌ Abort","callback_data":"abort:' + env.BUILD_NUMBER + '"}]]}'
+                        def msg = "🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF."
+                        
                         try {
-                            // ADD CLICKABLE LINK TO TELEGRAM MESSAGE
-                            def msg = "🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.\n\n<a href='${env.BUILD_URL}'>👉 Click here to Approve or Abort in Jenkins</a>"
-                            telegramNotify(msg, "security-report.pdf")
+                            telegramNotify(msg, "security-report.pdf", buttons)
                         } catch (e) {
                             echo "Telegram notification failed: ${e.message}"
                         }
                         
                         try {
+                            // Added id: 'Proceed'
                             timeout(time: 1, unit: 'HOURS') {
-                                input message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
+                                input id: 'Proceed', message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
                             }
-                            // SET OUR CUSTOM FLAG
                             env.APPROVED = 'true'
                             currentBuild.result = 'UNSTABLE' 
                         } catch (err) {
@@ -120,11 +123,16 @@ def call() {
             
             // --- DEPLOYMENT ---
             stage('Deploy to Production') {
-                // CHECK OUR CUSTOM FLAG
-                when { expression { env.APPROVED == 'true' || currentBuild.currentResult == 'SUCCESS' } }
                 steps {
-                    echo "Deploying to Production..."
-                    telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
+                    script {
+                        // THE FIX: Using standard if statement
+                        if (env.APPROVED == 'true' || currentBuild.currentResult == 'SUCCESS') {
+                            echo "Deploying to Production..."
+                            telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
+                        } else {
+                            echo "Deployment skipped."
+                        }
+                    }
                 }
             }
         }
