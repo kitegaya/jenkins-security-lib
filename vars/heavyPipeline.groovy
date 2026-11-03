@@ -2,11 +2,18 @@
 def call() {
     pipeline {
         agent any
+        
+        // Create our own flag to track if a scan failed
+        environment {
+            SCAN_FAILED = 'false'
+        }
+        
         stages {
             stage('Fast: Secrets (Gitleaks)') {
                 steps {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         sh 'gitleaks detect --source . --no-git --redact --exit-code 1'
+                        script { env.SCAN_FAILED = 'true' }
                     }
                 }
             }
@@ -15,6 +22,7 @@ def call() {
                 steps {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         sh 'npm audit --audit-level=critical'
+                        script { env.SCAN_FAILED = 'true' }
                     }
                 }
             }
@@ -23,6 +31,7 @@ def call() {
                 steps {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         sh 'semgrep --config auto --error --json --output=semgrep-report.json .'
+                        script { env.SCAN_FAILED = 'true' }
                     }
                 }
             }
@@ -66,15 +75,19 @@ def call() {
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
-                        -r zap-report.html \
-                        -J zap-report.json
+                        -r /zap/wrk/zap-report.html \
+                        -J /zap/wrk/zap-report.json
                         '''
+                        script { env.SCAN_FAILED = 'true' }
                     }
                     
-                    // Teardown
+                    // Teardown & Fix Permissions
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
+                    
+                    // CRITICAL FIX: Make sure Jenkins can read the files ZAP created as root
+                    sh 'chmod 644 zap-report.json zap-report.html || true'
                 }
             }
             
@@ -88,11 +101,10 @@ def call() {
 
             // --- THE HUMAN GATE ---
             stage('Manual Approval Gate') {
-                // Only pause if the build previously FAILED (e.g., Semgrep found issues)
-                when { expression { currentBuild.currentResult == 'FAILURE' } }
+                // Use our custom environment variable instead of currentBuild.currentResult
+                when { expression { env.SCAN_FAILED == 'true' } }
                 steps {
                     script {
-                        // Wrap in try/catch so a Telegram failure doesn't abort the pipeline
                         try {
                             telegramNotify("🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.", "security-report.pdf")
                         } catch (e) {
@@ -100,10 +112,10 @@ def call() {
                         }
                         
                         try {
+                            // This pauses the build in the Jenkins UI
                             timeout(time: 1, unit: 'HOURS') {
                                 input message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
                             }
-                            // Override the FAILURE status since a human approved it
                             currentBuild.result = 'UNSTABLE' 
                         } catch (err) {
                             telegramNotify("❌ Deployment Aborted for ${env.JOB_NAME}.")
@@ -117,7 +129,7 @@ def call() {
             stage('Deploy to Production') {
                 steps {
                     echo "Deploying to Production..."
-                    // Add your real deployment commands here (e.g., rsync, ssh pm2 restart)
+                    // Add your real deployment commands here
                     
                     telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
                 }
