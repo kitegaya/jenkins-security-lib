@@ -26,7 +26,7 @@ def call() {
                 }
             }
 
-            stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
+                        stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
                     // Clean up zombies from previous failed runs
                     sh 'docker rm -f zap-test-app || true'
@@ -37,25 +37,28 @@ def call() {
                     sh 'docker build -t test-app:latest .'
                     
                     echo "Starting Isolated Network..."
-                    // --internal prevents the app from reaching the internet during the scan
                     sh 'docker network create --internal zap-net'
                     
                     echo "Starting App Container..."
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
                     
-                    // Robust wait: Poll the app until it responds (max 60 seconds)
-                    echo "Waiting for App to boot..."
-                    sh '''
-                        for i in $(seq 1 30); do
-                            if docker exec zap-test-app curl -s http://localhost:3000 > /dev/null 2>&1; then
-                                echo "App is up!"
-                                exit 0
-                            fi
-                            sleep 2
-                        done
-                        echo "App failed to start in time."
-                        exit 1
-                    '''
+                    // Robust wait: Use Node.js to check the app (since curl isn't in alpine)
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        echo "Waiting for App to boot..."
+                        sh '''
+                            for i in $(seq 1 30); do
+                                # We use node to check the port instead of curl
+                                if docker exec zap-test-app node -e "require('http').get('http://localhost:3000', res => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))" > /dev/null 2>&1; then
+                                    echo "App is up!"
+                                    exit 0
+                                fi
+                                sleep 2
+                            done
+                            echo "App failed to start in time. Printing logs:"
+                            docker logs zap-test-app
+                            exit 1
+                        '''
+                    }
                     
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         sh '''
