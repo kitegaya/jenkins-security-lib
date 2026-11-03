@@ -1,10 +1,12 @@
 import json
 import os
 import sys
+import datetime
 from xml.sax.saxutils import escape
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 def load_json(path):
     if not os.path.exists(path):
@@ -22,13 +24,32 @@ def generate_pdf():
     styles = getSampleStyleSheet()
     story = []
 
+    # --- METADATA ---
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
     story.append(Paragraph("<b>Automated Security Scan Report</b>", styles['Title']))
+    story.append(Paragraph(f"<b>Generated:</b> {now}", styles['Normal']))
     story.append(Spacer(1, 20))
+
+    # --- EXECUTIVE SUMMARY ---
+    story.append(Paragraph("<b>Executive Summary</b>", styles['Heading1']))
+    
+    semgrep_data = load_json("semgrep-report.json")
+    zap_data = load_json("zap-report.json")
+    
+    semgrep_count = len(semgrep_data.get("results", [])) if semgrep_data else 0
+    zap_count = 0
+    if zap_data:
+        for site in zap_data.get("site", []):
+            zap_count += len(site.get("alerts", []))
+
+    story.append(Paragraph(f"• <b>Semgrep Findings:</b> {semgrep_count}", styles['Normal']))
+    story.append(Paragraph(f"• <b>OWASP ZAP Alerts:</b> {zap_count}", styles['Normal']))
+    story.append(Spacer(1, 15))
+    story.append(PageBreak())
 
     # --- SEMGREP SECTION ---
     story.append(Paragraph("<b>1. Static Analysis (Semgrep)</b>", styles['Heading1']))
     
-    semgrep_data = load_json("semgrep-report.json")
     if semgrep_data:
         findings = semgrep_data.get("results", [])
         if not findings:
@@ -36,13 +57,22 @@ def generate_pdf():
         else:
             story.append(Paragraph(f"⚠️ Found {len(findings)} issues:", styles['Normal']))
             story.append(Spacer(1, 10))
+            
             for idx, issue in enumerate(findings, 1):
-                msg = escape(issue.get("extra", {}).get("message", "No description"))
-                path = escape(issue.get("path", "unknown"))
+                msg = escape(str(issue.get("extra", {}).get("message", "No description")))
+                path = escape(str(issue.get("path", "unknown")))
                 line = issue.get("start", {}).get("line", "?")
-                check_id = escape(issue.get('check_id', 'unknown-rule'))
+                check_id = escape(str(issue.get('check_id', 'unknown-rule')))
+                severity = str(issue.get("extra", {}).get("severity", "INFO")).upper()
                 
-                text = f"<b>{idx}. {check_id}</b><br/>File: {path} (Line {line})<br/>Issue: {msg}"
+                # Color code severity
+                color = colors.black
+                if severity == "ERROR":
+                    color = colors.red
+                elif severity == "WARNING":
+                    color = colors.orange
+                    
+                text = f"<b>{idx}. {check_id}</b> <font color='{color.hexval()}'><b>[{severity}]</b></font><br/>File: {path} (Line {line})<br/>Issue: {msg}"
                 story.append(Paragraph(text, styles['Normal']))
                 story.append(Spacer(1, 10))
     else:
@@ -53,23 +83,38 @@ def generate_pdf():
     # --- ZAP SECTION ---
     story.append(Paragraph("<b>2. Dynamic Analysis (OWASP ZAP)</b>", styles['Heading1']))
     
-    zap_data = load_json("zap-report.json")
     if zap_data:
         sites = zap_data.get("site", [])
         for site in sites:
-            story.append(Paragraph(f"<b>Target:</b> {escape(site.get('@name', 'Unknown'))}", styles['Heading2']))
+            story.append(Paragraph(f"<b>Target:</b> {escape(str(site.get('@name', 'Unknown')))}", styles['Heading2']))
             alerts = site.get("alerts", [])
             
             if not alerts:
                 story.append(Paragraph("✅ No alerts found by ZAP.", styles['Normal']))
             else:
                 for alert in alerts:
-                    name = escape(alert.get("alert", "Unknown Alert"))
-                    risk = escape(alert.get("riskdesc", "Unknown Risk"))
-                    desc = escape(alert.get("desc", "").replace("\n", " ")[:200]) + "..."
+                    name = escape(str(alert.get("alert", "Unknown Alert")))
+                    risk = str(alert.get("riskdesc", "Unknown Risk"))
+                    
+                    # Clean and truncate description safely
+                    raw_desc = str(alert.get("desc", ""))
+                    clean_desc = raw_desc.replace("\n", " ").replace("\r", " ")
+                    if len(clean_desc) > 300:
+                        clean_desc = clean_desc[:300] + "..."
+                    desc = escape(clean_desc)
+                    
                     count = len(alert.get("instances", []))
                     
-                    text = f"<b>{name}</b><br/>Risk: {risk}<br/>Instances: {count}<br/>Description: {desc}"
+                    # Color code risk
+                    color = colors.black
+                    if "High" in risk:
+                        color = colors.red
+                    elif "Medium" in risk:
+                        color = colors.orange
+                    elif "Low" in risk:
+                        color = colors.blue
+                        
+                    text = f"<b>{name}</b> <font color='{color.hexval()}'><b>[{risk}]</b></font><br/>Instances: {count}<br/>Description: {desc}"
                     story.append(Paragraph(text, styles['Normal']))
                     story.append(Spacer(1, 10))
     else:
