@@ -1,3 +1,4 @@
+// vars/heavyPipeline.groovy
 def call() {
     pipeline {
         agent any
@@ -26,7 +27,7 @@ def call() {
                 }
             }
 
-                        stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
+            stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
                     // Clean up zombies from previous failed runs
                     sh 'docker rm -f zap-test-app || true'
@@ -42,12 +43,11 @@ def call() {
                     echo "Starting App Container..."
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
                     
-                    // Robust wait: Use Node.js to check the app (since curl isn't in alpine)
+                    // Robust wait: Use Node.js to check the app
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         echo "Waiting for App to boot..."
                         sh '''
                             for i in $(seq 1 30); do
-                                # We use node to check the port instead of curl
                                 if docker exec zap-test-app node -e "require('http').get('http://localhost:3000', res => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))" > /dev/null 2>&1; then
                                     echo "App is up!"
                                     exit 0
@@ -81,9 +81,6 @@ def call() {
             stage('Generate Unified Report') {
                 steps {
                     writeFile file: 'generate_report.py', text: libraryResource('generate_report.py')
-                    
-                    // Ensure reportlab is available in the Jenkins agent
-                    sh 'pip3 install --user reportlab || true'
                     sh 'python3 generate_report.py'
                     sh 'rm generate_report.py'
                 }
@@ -91,11 +88,16 @@ def call() {
 
             // --- THE HUMAN GATE ---
             stage('Manual Approval Gate') {
-                // Only pause if the build previously FAILED
+                // Only pause if the build previously FAILED (e.g., Semgrep found issues)
                 when { expression { currentBuild.currentResult == 'FAILURE' } }
                 steps {
                     script {
-                        telegramNotify("🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.", "security-report.pdf")
+                        // Wrap in try/catch so a Telegram failure doesn't abort the pipeline
+                        try {
+                            telegramNotify("🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.", "security-report.pdf")
+                        } catch (e) {
+                            echo "Telegram notification failed, but continuing to gate: ${e.message}"
+                        }
                         
                         try {
                             timeout(time: 1, unit: 'HOURS') {
