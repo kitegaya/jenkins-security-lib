@@ -1,4 +1,3 @@
-// vars/heavyPipeline.groovy
 def call() {
     pipeline {
         agent any
@@ -29,19 +28,34 @@ def call() {
 
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
-                    // --- ADD THESE 3 LINES TO CLEAN UP ZOMBIE CONTAINERS ---
+                    // Clean up zombies from previous failed runs
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
-                    // -------------------------------------------------------
 
                     echo "Building App Container..."
                     sh 'docker build -t test-app:latest .'
-                    // ... rest of the stage
-                    sh 'docker build -t test-app:latest .'
-                    sh 'docker network create zap-net || true'
+                    
+                    echo "Starting Isolated Network..."
+                    // --internal prevents the app from reaching the internet during the scan
+                    sh 'docker network create --internal zap-net'
+                    
+                    echo "Starting App Container..."
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
-                    sh 'sleep 10'
+                    
+                    // Robust wait: Poll the app until it responds (max 60 seconds)
+                    echo "Waiting for App to boot..."
+                    sh '''
+                        for i in $(seq 1 30); do
+                            if docker exec zap-test-app curl -s http://localhost:3000 > /dev/null 2>&1; then
+                                echo "App is up!"
+                                exit 0
+                            fi
+                            sleep 2
+                        done
+                        echo "App failed to start in time."
+                        exit 1
+                    '''
                     
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         sh '''
@@ -53,6 +67,8 @@ def call() {
                         -J zap-report.json
                         '''
                     }
+                    
+                    // Teardown
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
@@ -62,6 +78,9 @@ def call() {
             stage('Generate Unified Report') {
                 steps {
                     writeFile file: 'generate_report.py', text: libraryResource('generate_report.py')
+                    
+                    // Ensure reportlab is available in the Jenkins agent
+                    sh 'pip3 install --user reportlab || true'
                     sh 'python3 generate_report.py'
                     sh 'rm generate_report.py'
                 }
@@ -70,7 +89,7 @@ def call() {
             // --- THE HUMAN GATE ---
             stage('Manual Approval Gate') {
                 // Only pause if the build previously FAILED
-                when { expression { currentBuild.result == 'FAILURE' } }
+                when { expression { currentBuild.currentResult == 'FAILURE' } }
                 steps {
                     script {
                         telegramNotify("🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF.", "security-report.pdf")
@@ -79,6 +98,8 @@ def call() {
                             timeout(time: 1, unit: 'HOURS') {
                                 input message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
                             }
+                            // Override the FAILURE status since a human approved it
+                            currentBuild.result = 'UNSTABLE' 
                         } catch (err) {
                             telegramNotify("❌ Deployment Aborted for ${env.JOB_NAME}.")
                             error "Pipeline aborted by user or timeout."
@@ -92,7 +113,6 @@ def call() {
                 steps {
                     echo "Deploying to Production..."
                     // Add your real deployment commands here (e.g., rsync, ssh pm2 restart)
-                    // sh 'rsync ...'
                     
                     telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
                 }
@@ -100,7 +120,7 @@ def call() {
         }
         post {
             always {
-                archiveArtifacts artifacts: 'semgrep-report.json, zap-report.json, security-report.pdf', allowEmptyArchive: true
+                archiveArtifacts artifacts: 'semgrep-report.json, zap-report.json, zap-report.html, security-report.pdf', allowEmptyArchive: true
             }
         }
     }
