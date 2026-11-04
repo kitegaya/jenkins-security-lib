@@ -29,8 +29,10 @@ def call() {
             }
 
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
+                // Only run this stage if the repository actually has a Dockerfile
+                when { expression { fileExists('Dockerfile') } }
                 steps {
-                    // Clean up any leftover containers
+                    // 1. Clean up any leftover containers from previous runs
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
@@ -41,7 +43,7 @@ def call() {
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
                     
                     script {
-                        // Wait for the app to boot up
+                        // 2. Wait for the app to boot up (max 60 seconds)
                         def bootStatus = sh(script: '''
                             for i in $(seq 1 30); do
                                 if docker exec zap-test-app node -e "require('http').get('http://localhost:3000', res => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))" > /dev/null 2>&1; then
@@ -59,9 +61,9 @@ def call() {
                         }
                     }
                     
-                    // Run ZAP with the volume mounted and the working directory set
+                    // 3. Run ZAP (using --user root so it can write to the mounted volume)
                     sh '''
-                    docker run --name zap-runner --network zap-net \
+                    docker run --name zap-runner --user root --network zap-net \
                     -v $(pwd):/zap/wrk/:rw \
                     -w /zap/wrk \
                     zaproxy/zap-stable zap-baseline.py \
@@ -70,11 +72,11 @@ def call() {
                     -J zap-report.json -I || true
                     '''
                     
-                    // SAFETY NET: Force copy the files out of the container if the volume mount fails
+                    // 4. Safety Net: Force copy the files just in case the volume mount fails
                     sh 'docker cp zap-runner:/zap/wrk/zap-report.json ./zap-report.json || true'
                     sh 'docker cp zap-runner:/zap/wrk/zap-report.html ./zap-report.html || true'
                     
-                    // Teardown
+                    // 5. Teardown
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
@@ -126,6 +128,8 @@ def call() {
                         echo "Deploying to Production..."
                         // If we reached this stage, the gate was passed. Keep the build Yellow.
                         currentBuild.result = 'UNSTABLE' 
+                        
+                        // Add your real deployment commands here later (Task 2)
                         
                         telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
                     }
