@@ -1,3 +1,37 @@
+// vars/heavyPipeline.groovy
+def call() {
+    pipeline {
+        agent any
+        
+        environment {
+            APPROVED = 'false'
+        }
+        
+        stages {
+            stage('Fast: Secrets (Gitleaks)') {
+                steps {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        sh 'gitleaks detect --source . --no-git --redact --exit-code 1'
+                    }
+                }
+            }
+            
+            stage('Fast: Dependencies (NPM Audit)') {
+                steps {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        sh 'npm audit --audit-level=critical'
+                    }
+                }
+            }
+
+            stage('Heavy: Static Analysis (Semgrep)') {
+                steps {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        sh 'semgrep --config auto --error --json --output=semgrep-report.json .'
+                    }
+                }
+            }
+
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
                     sh 'docker rm -f zap-test-app || true'
@@ -47,3 +81,61 @@
                     sh 'chmod 644 zap-report.json zap-report.html || true'
                 }
             }
+            
+            stage('Generate Unified Report') {
+                steps {
+                    writeFile file: 'generate_report.py', text: libraryResource('generate_report.py')
+                    sh 'python3 generate_report.py'
+                    sh 'rm generate_report.py'
+                }
+            }
+
+            // --- THE HUMAN GATE ---
+            stage('Manual Approval Gate') {
+                when { expression { currentBuild.currentResult == 'FAILURE' } }
+                steps {
+                    script {
+                        def buttons = '{"inline_keyboard":[[{"text":"✅ Proceed","callback_data":"proceed:' + env.BUILD_NUMBER + '"},{"text":"❌ Abort","callback_data":"abort:' + env.BUILD_NUMBER + '"}]]}'
+                        def msg = "🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF."
+                        
+                        try {
+                            telegramNotify(msg, "security-report.pdf", buttons)
+                        } catch (e) {
+                            echo "Telegram notification failed: ${e.message}"
+                        }
+                        
+                        try {
+                            timeout(time: 1, unit: 'HOURS') {
+                                input id: 'Proceed', message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
+                            }
+                            env.APPROVED = 'true'
+                            currentBuild.result = 'UNSTABLE' 
+                        } catch (err) {
+                            telegramNotify("❌ Deployment Aborted for ${env.JOB_NAME}.")
+                            error "Pipeline aborted by user or timeout."
+                        }
+                    }
+                }
+            }
+            
+            // --- DEPLOYMENT ---
+            stage('Deploy to Production') {
+                steps {
+                    script {
+                        if (env.APPROVED == 'true' || currentBuild.currentResult == 'SUCCESS') {
+                            echo "Deploying to Production..."
+                            telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
+                        } else {
+                            echo "Deployment skipped."
+                        }
+                    }
+                }
+            }
+        }
+        post {
+            always {
+                archiveArtifacts artifacts: 'semgrep-report.json, zap-report.json, zap-report.html, security-report.pdf', allowEmptyArchive: true
+            }
+        }
+    }
+}
