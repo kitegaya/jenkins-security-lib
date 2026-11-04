@@ -6,7 +6,6 @@ def call() {
         stages {
             stage('Fast: Secrets (Gitleaks)') {
                 steps {
-                    // Changed to UNSTABLE
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         sh 'gitleaks detect --source . --no-git --redact --exit-code 1'
                     }
@@ -15,7 +14,6 @@ def call() {
             
             stage('Fast: Dependencies (NPM Audit)') {
                 steps {
-                    // Changed to UNSTABLE
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         sh 'npm audit --audit-level=critical'
                     }
@@ -24,7 +22,6 @@ def call() {
 
             stage('Heavy: Static Analysis (Semgrep)') {
                 steps {
-                    // Changed to UNSTABLE
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                         sh 'semgrep --config auto --error --json --output=semgrep-report.json .'
                     }
@@ -33,6 +30,7 @@ def call() {
 
             stage('Heavy: Dynamic Analysis (OWASP ZAP)') {
                 steps {
+                    // Clean up any leftover containers
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
@@ -43,6 +41,7 @@ def call() {
                     sh 'docker run -d --name zap-test-app --network zap-net test-app:latest'
                     
                     script {
+                        // Wait for the app to boot up
                         def bootStatus = sh(script: '''
                             for i in $(seq 1 30); do
                                 if docker exec zap-test-app node -e "require('http').get('http://localhost:3000', res => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))" > /dev/null 2>&1; then
@@ -60,18 +59,20 @@ def call() {
                         }
                     }
                     
-                    // Run ZAP without volume mounts, save internally, use -I to ignore warnings exit code
+                    // Run ZAP with the volume mounted and the working directory set
                     sh '''
-                    docker run --name zap-runner --user root --network zap-net \
+                    docker run --name zap-runner --network zap-net \
+                    -v $(pwd):/zap/wrk/:rw \
+                    -w /zap/wrk \
                     zaproxy/zap-stable zap-baseline.py \
                     -t http://zap-test-app:3000 \
-                    -r /zap/zap-report.html \
-                    -J /zap/zap-report.json -I || true
+                    -r zap-report.html \
+                    -J zap-report.json -I || true
                     '''
                     
-                    // Extract the files from the container directly to Jenkins workspace
-                    sh 'docker cp zap-runner:/zap/zap-report.json ./zap-report.json || true'
-                    sh 'docker cp zap-runner:/zap/zap-report.html ./zap-report.html || true'
+                    // SAFETY NET: Force copy the files out of the container if the volume mount fails
+                    sh 'docker cp zap-runner:/zap/wrk/zap-report.json ./zap-report.json || true'
+                    sh 'docker cp zap-runner:/zap/wrk/zap-report.html ./zap-report.html || true'
                     
                     // Teardown
                     sh 'docker rm -f zap-test-app || true'
@@ -109,6 +110,7 @@ def call() {
                             timeout(time: 1, unit: 'HOURS') {
                                 input id: 'Proceed', message: 'Security issues found. Force deploy to PRODUCTION?', ok: 'Proceed'
                             }
+                            // If we reach here, the user clicked Proceed
                         } catch (err) {
                             telegramNotify("❌ Deployment Aborted for ${env.JOB_NAME}.")
                             error "Pipeline aborted by user or timeout."
@@ -122,7 +124,7 @@ def call() {
                 steps {
                     script {
                         echo "Deploying to Production..."
-                        // Ensure the build status is Yellow, not Red
+                        // If we reached this stage, the gate was passed. Keep the build Yellow.
                         currentBuild.result = 'UNSTABLE' 
                         
                         telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
