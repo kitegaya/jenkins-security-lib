@@ -64,7 +64,7 @@ def call() {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         // THE FIX: Added -r report.html -J report.json
                         sh '''
-                        docker run --name zap-runner --user root --network zap-net \
+                        docker run --name zap-runner --user root -w /zap/wrk --network zap-net \
                         -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
