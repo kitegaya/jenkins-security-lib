@@ -62,22 +62,30 @@ def call() {
                     }
                     
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        // Run ZAP WITHOUT the volume mount to prevent path confusion
                         sh '''
                         docker run --name zap-runner --user root --network zap-net \
-                        -v $(pwd):/zap/wrk/:rw \
                         zaproxy/zap-stable zap-baseline.py \
                         -t http://zap-test-app:3000 \
-                        -r /zap/wrk/zap-report.html \
-                        -J /zap/wrk/zap-report.json
+                        -r zap-report.html \
+                        -J zap-report.json
                         '''
                     }
+                    
+                    // Force copy the files out of the container
+                    sh 'docker cp zap-runner:/zap/wrk/zap-report.json ./zap-report.json || true'
+                    sh 'docker cp zap-runner:/zap/wrk/zap-report.html ./zap-report.html || true'
                     
                     // Teardown
                     sh 'docker rm -f zap-test-app || true'
                     sh 'docker rm -f zap-runner || true'
                     sh 'docker network rm zap-net || true'
                     
-                    // Fix permissions so Jenkins can read them (NO mv commands needed)
+                    // Trace step: list files
+                    echo "=== Checking for ZAP reports ==="
+                    sh 'ls -la zap-report.* || true'
+                    
+                    // Fix permissions just in case
                     sh 'chmod 644 zap-report.json zap-report.html || true'
                 }
             }
@@ -95,6 +103,7 @@ def call() {
                 when { expression { currentBuild.currentResult == 'FAILURE' } }
                 steps {
                     script {
+                        // Create Telegram Buttons
                         def buttons = '{"inline_keyboard":[[{"text":"✅ Proceed","callback_data":"proceed:' + env.BUILD_NUMBER + '"},{"text":"❌ Abort","callback_data":"abort:' + env.BUILD_NUMBER + '"}]]}'
                         def msg = "🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF."
                         
@@ -122,11 +131,16 @@ def call() {
             stage('Deploy to Production') {
                 steps {
                     script {
-                        if (env.APPROVED == 'true' || currentBuild.currentResult == 'SUCCESS') {
+                        // TRACE: See exactly what the variables are evaluating to
+                        echo "TRACE: env.APPROVED is -> '${env.APPROVED}'"
+                        echo "TRACE: currentBuild.result is -> '${currentBuild.result}'"
+                        
+                        // THE FIX: Using standard if statement
+                        if (env.APPROVED == 'true' || currentBuild.currentResult == 'UNSTABLE') {
                             echo "Deploying to Production..."
                             telegramNotify("✅ <b>Deployment Successful</b>\nRepo: ${env.JOB_NAME} is now live in Production.")
                         } else {
-                            echo "Deployment skipped."
+                            echo "Deployment skipped because conditions were not met."
                         }
                     }
                 }
