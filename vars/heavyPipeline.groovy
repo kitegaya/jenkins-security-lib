@@ -99,7 +99,11 @@ def call() {
                 when { expression { currentBuild.result == 'UNSTABLE' || currentBuild.result == 'FAILURE' } }
                 steps {
                     script {
-                        def buttons = '{"inline_keyboard":[[{"text":"✅ Proceed","callback_data":"proceed:' + env.BUILD_NUMBER + '"},{"text":"❌ Abort","callback_data":"abort:' + env.BUILD_NUMBER + '"}]]}'
+                        // THE FIX: Dynamically include the JOB_NAME in the callback data
+                        def jobName = env.JOB_NAME
+                        def buildNum = env.BUILD_NUMBER
+                        def buttons = '{"inline_keyboard":[[{"text":"✅ Proceed","callback_data":"proceed:' + jobName + ':' + buildNum + '"},{"text":"❌ Abort","callback_data":"abort:' + jobName + ':' + buildNum + '"}]]}'
+                        
                         def msg = "🚨 <b>HEAVY SCAN FAILED</b>\nRepo: ${env.JOB_NAME}\nIssues found. See attached PDF."
                         
                         try {
